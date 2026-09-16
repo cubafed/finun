@@ -117,6 +117,7 @@ export default function Community() {
   const { position, remember } = useStudyHistory();
   const [week] = useState(() => Date.now() - 7 * 86400000);
   const [showFilters, setShowFilters] = useState(false);
+  const [lectureView, setLectureView] = useState("summary");
   const [loading, setLoading] = useState(true),
     [authRequired, setAuthRequired] = useState(false);
   async function refresh() {
@@ -155,6 +156,7 @@ export default function Community() {
     const sync = () => {
       const p = new URLSearchParams(location.search);
       setSelected(p.get("lecture") || "");
+      setLectureView(p.get("view") === "discussion" ? "discussion" : p.get("view") === "materials" ? "materials" : "summary");
       const t = p.get("tab") || "library";
       setShowFilters(t === "missed");
       setTab(
@@ -197,13 +199,44 @@ export default function Community() {
   }
   async function upload(file: File | undefined) {
     if (!file) return "";
+    const image = ["image/jpeg", "image/png", "image/webp", "image/gif"].includes(
+      file.type,
+    );
+    const limit = image ? 8 : 50;
+    if (file.size > limit * 1024 * 1024) {
+      toast.error(
+        image
+          ? "Фото должно быть меньше 8 МБ."
+          : "Аудио должно быть меньше 50 МБ.",
+      );
+      return "";
+    }
     setBusy(true);
     try {
-      const f = new FormData();
-      f.append("file", file);
-      const r = await fetch("/api/files", { method: "POST", body: f });
-      const d: { url?: string; error?: string } = await r.json();
-      if (!r.ok) throw Error(d.error);
+      const r = await fetch("/api/files", {
+        method: "POST",
+        headers: {
+          "Content-Type": file.type || "application/octet-stream",
+          "X-File-Name": encodeURIComponent(file.name),
+          "X-File-Size": String(file.size),
+        },
+        body: file,
+      });
+      const raw = await r.text();
+      const d: { url?: string; error?: string } = (() => {
+        try {
+          return JSON.parse(raw);
+        } catch {
+          return {};
+        }
+      })();
+      if (!r.ok)
+        throw Error(
+          d.error ||
+            (r.status === 413
+              ? "Файл слишком большой для загрузки. Выберите запись до 50 МБ."
+              : "Не удалось загрузить файл. Попробуйте ещё раз."),
+        );
       return d.url || "";
     } catch (e) {
       toast.error(
@@ -222,6 +255,7 @@ export default function Community() {
     .sort((a, b) => b.date.localeCompare(a.date));
   const marks = items.filter((x) => x.kind === "mark");
   const mark = (id: string) => marks.find((x) => x.parent === id)?.value;
+  const reviewLectures = lectures.filter((l) => mark(l.id) === "repeat");
   const normalize = (s: string) =>
     s.toLocaleLowerCase("ru").replaceAll("ё", "е");
   const words = normalize(query).trim().split(/\s+/).filter(Boolean);
@@ -250,8 +284,9 @@ export default function Community() {
   const comments = items.filter((x) => x.kind === "comment");
   const requests = items.filter((x) => x.kind === "request");
   const packs = items.filter((x) => x.kind === "collection");
-  function open(id: string) {
+  function open(id: string, view = "summary") {
     setSelected(id);
+    setLectureView(view);
     setReply(null);
     setText("");
     setImage("");
@@ -261,7 +296,7 @@ export default function Community() {
     history.pushState(
       null,
       "",
-      "?tab=" + tab + "&lecture=" + encodeURIComponent(id),
+      "?tab=" + tab + "&lecture=" + encodeURIComponent(id) + "&view=" + view,
     );
     window.scrollTo({ top: 0 });
   }
@@ -271,6 +306,13 @@ export default function Community() {
     window.scrollTo({ top: 0 });
   }
   function nav(t: string) {
+    if (t !== tab) {
+      setQuery("");
+      setSubject("Все предметы");
+      setStatus("Все отметки");
+      setFrom("");
+      setTo("");
+    }
     setShowFilters(t === "missed");
     setSelected("");
     setTab(t);
@@ -462,11 +504,11 @@ export default function Community() {
           <nav>
             {(
               [
-                ["library", "Библиотека", BookOpen],
-                ["missed", "Что я пропустил?", CalendarDays],
+                ["library", "Лекции", BookOpen],
+                ["missed", "Пропущенное", CalendarDays],
                 ["session", "К сессии", GraduationCap],
                 ["discussions", "Обсуждения", MessageCircle],
-                ["requests", "Нужны материалы", HelpCircle],
+                ["requests", "Запросы", HelpCircle],
               ] as [string, string, typeof BookOpen][]
             ).map(([k, label, Icon]) => (
               <button
@@ -513,8 +555,7 @@ export default function Community() {
         <main className="main" id="main-content">
           <div className="demo-banner">
             <span>
-              Библиотека своей группы <span aria-hidden="true">/</span>{" "}
-              Стартовые лекции отмечены как примеры
+              Своя группа. Общие знания.
             </span>
             <details>
               <summary>О доступе</summary>
@@ -579,14 +620,20 @@ export default function Community() {
                   </p>
                 )}
               </div>
-              <nav className="lecture-sections" aria-label="Разделы лекции">
-                <a href="#lecture-summary">Конспект</a>
-                {lecture.audio && <a href="#lecture-audio">Аудио</a>}
-                <a href="#lecture-discussion">Обсуждение</a>
-                <a href="#lecture-progress">Прогресс</a>
-              </nav>
+              <Tabs value={lectureView} onValueChange={(view) => {
+                setLectureView(view);
+                const url = new URL(location.href);
+                url.searchParams.set("view", view);
+                history.replaceState(null, "", url);
+              }} className="lecture-tabs">
+              <TabsList className="lecture-tab-list" aria-label="Разделы лекции">
+                <TabsTrigger value="summary">Конспект</TabsTrigger>
+                <TabsTrigger value="materials">Материалы</TabsTrigger>
+                <TabsTrigger value="discussion">Обсуждение</TabsTrigger>
+              </TabsList>
               <div className="detail-layout">
                 <section>
+                  <TabsContent value="summary" forceMount>
                   <article className="panel summary-panel" id="lecture-summary">
                     <div className="section-heading">
                       <h2>
@@ -614,6 +661,8 @@ export default function Community() {
                       <div className="formula">{lecture.formula}</div>
                     )}
                   </article>
+                  </TabsContent>
+                  <TabsContent value="materials" forceMount>
                   <article className="panel" id="lecture-audio">
                     <h2>
                       <Headphones size={21} /> Аудиозапись
@@ -658,8 +707,7 @@ export default function Community() {
                       />
                     ) : (
                       <div className="empty-inline">
-                        Записи пока нет. Староста может добавить аудио в форме
-                        редактирования.
+                        Записи пока нет. {admin ? <button className="text-button" onClick={() => setEdit({ ...lecture })}>Добавить аудио</button> : "Можно попросить её в разделе «Запросы»."}
                       </div>
                     )}
                   </article>
@@ -679,6 +727,8 @@ export default function Community() {
                       <p className="muted">Фото ещё не добавлены.</p>
                     )}
                   </article>
+                  </TabsContent>
+                  <TabsContent value="discussion" forceMount>
                   <article className="panel" id="lecture-discussion">
                     <h2>
                       <MessageCircle size={21} /> Обсуждение{" "}
@@ -816,6 +866,7 @@ export default function Community() {
                       </button>
                     </form>
                   </article>
+                  </TabsContent>
                 </section>
                 <aside className="detail-side" id="lecture-progress">
                   <article className="panel">
@@ -884,6 +935,7 @@ export default function Community() {
                   )}
                 </aside>
               </div>
+              </Tabs>
             </>
           ) : (
             <>
@@ -897,7 +949,7 @@ export default function Community() {
                   <h1>
                     {
                       {
-                        library: "Лекции",
+                        library: "Забирай знания.",
                         missed: "Что я пропустил?",
                         session: "К сессии",
                         discussions: "Обсуждения",
@@ -908,7 +960,7 @@ export default function Community() {
                   <p className="muted">
                     {
                       {
-                        library: "Всё для учёбы. Кроме воли к учёбе.",
+                        library: "Конспекты, записи и помощь своих. Всё в одном месте.",
                         missed:
                           "Выберите даты — соберём пропущенные темы в одном месте.",
                         session:
@@ -958,7 +1010,7 @@ export default function Community() {
               </div>
               {(tab === "library" || tab === "missed") && (
                 <>
-                  <div className="stats-strip">
+                  <div className="study-blocks"><div className="stats-strip">
                     <span>
                       Разобрано{" "}
                       <strong>
@@ -975,23 +1027,16 @@ export default function Community() {
                     />
                     <button
                       className="text-button"
-                      onClick={() =>
-                        setStatus(
-                          status === "Нужно повторить"
-                            ? "Все отметки"
-                            : "Нужно повторить",
-                        )
-                      }
+                      onClick={() => nav("session")}
                     >
-                      Повторить:{" "}
-                      {lectures.filter((l) => mark(l.id) === "repeat").length}
+                      Повторить: {reviewLectures.length} →
                     </button>
                   </div>
                   {position &&
                     lectures.some((l) => l.id === position.lectureId) && (
                       <button
                         className="continue-reading"
-                        onClick={() => open(position.lectureId)}
+                        onClick={() => open(position.lectureId, position.seconds > 0 ? "materials" : "summary")}
                       >
                         <BookOpen size={20} />
                         <span>
@@ -1016,6 +1061,7 @@ export default function Community() {
                         <ArrowUpRight size={20} />
                       </button>
                     )}
+                  </div>
                   <div className="workspace-columns">
                     <section>
                       <div className="filters">
@@ -1036,6 +1082,13 @@ export default function Community() {
                             </button>
                           )}
                         </label>
+                        <div className="subject-chips" aria-label="Выбрать предмет">
+                          {["Все предметы", ...subjects].map((s) => (
+                            <button key={s} aria-pressed={subject === s} onClick={() => setSubject(s)}>
+                              {s === "Все предметы" ? "Все лекции" : s}
+                            </button>
+                          ))}
+                        </div>
                         <button
                           className="filter-toggle"
                           aria-expanded={showFilters}
@@ -1043,11 +1096,10 @@ export default function Community() {
                           onClick={() => setShowFilters(!showFilters)}
                         >
                           Фильтры
-                          {subject !== "Все предметы" ||
-                          status !== "Все отметки" ||
+                        {status !== "Все отметки" ||
                           from ||
                           to
-                            ? " · применены"
+                            ? " · активны"
                             : ""}{" "}
                           <span>{showFilters ? "−" : "+"}</span>
                         </button>
@@ -1124,7 +1176,7 @@ export default function Community() {
                         <h2>
                           {tab === "missed"
                             ? "Лекции за период"
-                            : "Свежие лекции"}{" "}
+                            : subject === "Все предметы" ? "Лекции группы" : subject}{" "}
                           <span className="count">{filtered.length}</span>
                         </h2>
                         <span className="meta" role="status" aria-live="polite">
@@ -1203,7 +1255,7 @@ export default function Community() {
                               {reactions(m.id)}
                               <button
                                 className="text-button"
-                                onClick={() => open(m.parent!)}
+                                onClick={() => open(m.parent!, "discussion")}
                               >
                                 К обсуждению ↗
                               </button>
@@ -1219,6 +1271,48 @@ export default function Community() {
                 </>
               )}
               {tab === "session" && (
+                <>
+                <section className="review-section" aria-labelledby="review-heading">
+                  <div className="section-heading">
+                    <h2 id="review-heading">Моё повторение <span className="count">{reviewLectures.length}</span></h2>
+                  </div>
+                  {reviewLectures.length ? (
+                    <div className="review-grid">
+                      {reviewLectures.map((l) => (
+                        <article className="review-card" key={l.id}>
+                          <p className="tag">{l.subject} · {date(l.date)}</p>
+                          <h3>{l.title}</h3>
+                          {l.questions?.trim() ? (
+                            <div className="review-questions">
+                              <strong>Проверь себя</strong>
+                              <p className="pre">{l.questions}</p>
+                            </div>
+                          ) : (
+                            <p className="muted">Вопросов пока нет — повторите конспект.</p>
+                          )}
+                          <div className="review-actions">
+                            <button className="secondary" onClick={() => open(l.id)}>
+                              Открыть лекцию <ArrowUpRight size={17} />
+                            </button>
+                            <button
+                              className="text-button"
+                              disabled={!ready || busy}
+                              onClick={() => save({ kind: "mark", parent: l.id, value: "done" })}
+                            >
+                              <Check size={16} /> Разобрался
+                            </button>
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="review-empty">
+                      <p>Пока нечего повторять. Отмечайте сложные лекции кнопкой «Нужно повторить».</p>
+                      <button className="secondary" onClick={() => nav("library")}>К лекциям <ArrowUpRight size={17} /></button>
+                    </div>
+                  )}
+                </section>
+                <div className="section-heading"><h2>Подборки группы</h2></div>
                 <div className="pack-grid">
                   {!packs.length && (
                     <div className="panel empty">
@@ -1269,6 +1363,7 @@ export default function Community() {
                     </article>
                   ))}
                 </div>
+                </>
               )}
               {tab === "requests" && (
                 <div className="requests-list">
@@ -1351,7 +1446,7 @@ export default function Community() {
                           <button
                             className="panel discussion-link"
                             key={l.id}
-                            onClick={() => open(l.id)}
+                            onClick={() => open(l.id, "discussion")}
                           >
                             <MessageCircle />
                             <span>
@@ -1385,7 +1480,7 @@ export default function Community() {
                           <button
                             className="panel discussion-link"
                             key={c.id}
-                            onClick={() => open(c.parent!)}
+                            onClick={() => open(c.parent!, "discussion")}
                           >
                             <MessageCircle />
                             <span>

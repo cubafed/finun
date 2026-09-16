@@ -102,32 +102,45 @@ const bytes = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aL1sAAAAASUVORK5CYII=",
   "base64",
 );
-const f = new FormData();
-f.append("file", new Blob([bytes], { type: "image/png" }), "test.png");
-const upload = await fetch(base + "/api/files", {
-  method: "POST",
-  headers: { cookie },
-  body: f,
-});
+const uploadFile = (content, type, name) =>
+  fetch(base + "/api/files", {
+    method: "POST",
+    headers: {
+      cookie,
+      "Content-Type": type,
+      "X-File-Name": encodeURIComponent(name),
+      "X-File-Size": String(content.size),
+    },
+    body: content,
+  });
+const upload = await uploadFile(
+  new Blob([bytes], { type: "image/png" }),
+  "image/png",
+  "test.png",
+);
 assert.equal(upload.status, 200);
 const asset = await upload.json();
+const largeAudio = await uploadFile(
+  new Blob([Buffer.alloc(1_200_000)], { type: "audio/mpeg" }),
+  "audio/mpeg",
+  "over-one-megabyte.mp3",
+);
+assert.equal(
+  largeAudio.status,
+  200,
+  "audio uploads must not hit the default 1 MB body parser limit",
+);
 const downloaded = await fetch(base + asset.url, { headers: { cookie } });
 assert.equal(downloaded.status, 200);
 assert.deepEqual(Buffer.from(await downloaded.arrayBuffer()), bytes);
 assert.equal((await fetch(base + asset.url)).status, 401);
-const invalid = new FormData();
-invalid.append(
-  "file",
-  new Blob(["<svg/>"], { type: "image/svg+xml" }),
-  "test.svg",
-);
 assert.equal(
   (
-    await fetch(base + "/api/files", {
-      method: "POST",
-      headers: { cookie },
-      body: invalid,
-    })
+    await uploadFile(
+      new Blob(["<svg/>"], { type: "image/svg+xml" }),
+      "image/svg+xml",
+      "test.svg",
+    )
   ).status,
   400,
 );

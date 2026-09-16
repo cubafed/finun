@@ -1,29 +1,28 @@
 import { env } from "cloudflare:workers";
 import { context, failure, sameOrigin } from "@/lib/server";
 export const dynamic = "force-dynamic";
+
+const imageTypes = ["image/jpeg", "image/png", "image/webp", "image/gif"];
+const audioTypes = [
+  "audio/mpeg",
+  "audio/mp4",
+  "audio/x-m4a",
+  "audio/wav",
+  "audio/ogg",
+  "audio/webm",
+];
+
 export async function POST(req: Request) {
   try {
     if (!sameOrigin(req)) return new Response("Forbidden", { status: 403 });
     const { admin } = await context();
     if (!env.BUCKET) throw new Error("STORAGE");
-    const form = await req.formData();
-    const f = form.get("file");
-    if (!(f instanceof File))
+    if (!req.body)
       return Response.json({ error: "Выберите файл" }, { status: 400 });
-    const image = [
-      "image/jpeg",
-      "image/png",
-      "image/webp",
-      "image/gif",
-    ].includes(f.type);
-    const audio = [
-      "audio/mpeg",
-      "audio/mp4",
-      "audio/x-m4a",
-      "audio/wav",
-      "audio/ogg",
-      "audio/webm",
-    ].includes(f.type);
+    const type = req.headers.get("content-type")?.split(";", 1)[0] || "";
+    const declaredSize = Number(req.headers.get("x-file-size") || "0");
+    const image = imageTypes.includes(type);
+    const audio = audioTypes.includes(type);
     if (!image && !(audio && admin))
       return Response.json(
         {
@@ -32,7 +31,11 @@ export async function POST(req: Request) {
         },
         { status: 400 },
       );
-    if (f.size > (image ? 8 : 50) * 1024 * 1024)
+    if (
+      !Number.isSafeInteger(declaredSize) ||
+      declaredSize <= 0 ||
+      declaredSize > (image ? 8 : 50) * 1024 * 1024
+    )
       return Response.json(
         {
           error: image
@@ -42,8 +45,8 @@ export async function POST(req: Request) {
         { status: 400 },
       );
     const id = crypto.randomUUID();
-    await env.BUCKET.put(id, f.stream(), {
-      httpMetadata: { contentType: f.type },
+    await env.BUCKET.put(id, req.body, {
+      httpMetadata: { contentType: type },
     });
     return Response.json({ url: "/api/files?id=" + id });
   } catch (e) {
